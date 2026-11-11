@@ -1,0 +1,16 @@
+<templates>
+  <t t-name="example.Dialog">
+    <div class="dialog">
+      <header class="dialog-header">
+        <h2 t-out="this.props.title"></h2>
+        <button class="close" t-on-click="this.close">×</button>
+      </header>
+      <div class="dialog-body">
+        <t t-call-slot="default"/>
+      </div>
+      <footer class="dialog-footer">
+        <t t-call-slot="footer"/>
+      </footer>
+    </div>
+  </t>
+</templates>

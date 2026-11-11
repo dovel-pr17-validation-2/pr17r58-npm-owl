@@ -1,0 +1,135 @@
+// Compile-time checks for schema defaults (.optional(value)). This file is
+// only typechecked (npm run test:types); it is not executed.
+import { Registry, Resource, t, useConfig, useProps, type GetProps } from "../src";
+
+// A call to assertEq<A, B>() only typechecks if A and B are mutually assignable
+type Eq<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+declare function assertEq<A, B>(...args: Eq<A, B> extends true ? [] : [never]): void;
+
+class Comp {
+  props = useProps({
+    p: t.number().optional(4),
+    q: t.string().optional("a"),
+    r: t.string(),
+    s: t.boolean().optional(),
+  });
+}
+declare const comp: Comp;
+void comp;
+
+// reader view: defaulted keys are required and stripped of the brand,
+// optional keys may be undefined
+assertEq<typeof comp.props.p, number>();
+assertEq<typeof comp.props.q, string>();
+assertEq<typeof comp.props.r, string>();
+assertEq<typeof comp.props.s, boolean | undefined>();
+
+// parent view: defaulted and optional keys may be omitted
+type ParentProps = GetProps<Comp>;
+const ok1: ParentProps = { r: "x" };
+const ok2: ParentProps = { r: "x", p: 1, q: "y", s: true };
+// @ts-expect-error r is mandatory
+const ko1: ParentProps = { p: 1 };
+// @ts-expect-error p must be a number
+const ko2: ParentProps = { r: "x", p: "nope" };
+// @ts-expect-error s must be a boolean
+const ko3: ParentProps = { r: "x", s: 1 };
+
+// without defaults, the reader and parent views coincide (and the props type
+// displays as a plain flat object)
+class OnlyOptionals {
+  props = useProps({
+    className: t.string().optional(),
+    close: t.function().optional(),
+  });
+}
+declare const onlyOptionals: OnlyOptionals;
+void onlyOptionals;
+assertEq<typeof onlyOptionals.props.className, string | undefined>();
+type OptParentProps = GetProps<OnlyOptionals>;
+const ok3: OptParentProps = {};
+const ok4: OptParentProps = { className: "a" };
+// @ts-expect-error className must be a string
+const ko4: OptParentProps = { className: 4 };
+
+// defaults must match the declared type, as a plain value or a factory
+useProps({ p: t.number().optional(4) });
+useProps({ p: t.number().optional(() => 4) });
+// @ts-expect-error default must be a number
+useProps({ p: t.number().optional("4") });
+// a default for a function type must use the factory form
+useProps({ cb: t.function().optional(() => () => {}) });
+// @ts-expect-error a plain function default is rejected (factory form only)
+useProps({ cb: t.function().optional(() => {}) });
+
+// useProps.static: schema default strips to the value type, optional adds undefined
+function _staticPropCheck() {
+  const label = useProps.static("label", t.string().optional("fallback"));
+  assertEq<typeof label, string>();
+  const plain = useProps.static("plain", t.string());
+  assertEq<typeof plain, string>();
+  const opt = useProps.static("opt", t.string().optional());
+  assertEq<typeof opt, string | undefined>();
+  void [label, plain, opt];
+}
+
+// useConfig: schema default strips to the value type, optional adds undefined
+function _configCheck() {
+  const delay = useConfig("delay", t.number().optional(500));
+  assertEq<typeof delay, number>();
+  const plain = useConfig("plain", t.number());
+  assertEq<typeof plain, number>();
+  const opt = useConfig("opt", t.number().optional());
+  assertEq<typeof opt, number | undefined>();
+  void [delay, plain, opt];
+}
+
+// Registry / Resource: the validation type describes the item value type
+function _registryCheck() {
+  const registry = new Registry({ validation: t.string() });
+  registry.add("key", "some value");
+  const value = registry.get("key");
+  assertEq<typeof value, string>();
+  assertEq<ReturnType<typeof registry.items>, string[]>();
+  // @ts-expect-error a number is not a string
+  registry.add("other", 42);
+
+  const resource = new Resource({ validation: t.number() });
+  resource.add(5);
+  assertEq<ReturnType<typeof resource.items>, number[]>();
+  // @ts-expect-error a string is not a number
+  resource.add("nope");
+  void value;
+}
+
+// schema.toShape(): a reusable object schema drives props with the same reader
+// view as passing the shape inline (defaulted keys required, optionals may be
+// undefined).
+const NotificationShape = {
+  message: t.string(),
+  className: t.string().optional("card"),
+  sticky: t.boolean().optional(),
+};
+class FromObjectSchema {
+  props = useProps(t.object(NotificationShape).toShape());
+}
+declare const fromObjectSchema: FromObjectSchema;
+assertEq<typeof fromObjectSchema.props.message, string>();
+assertEq<typeof fromObjectSchema.props.className, string>();
+assertEq<typeof fromObjectSchema.props.sticky, boolean | undefined>();
+
+// t.and(...).toShape() merges the members' shapes into a single props shape
+const ComposedSchema = t.and([
+  t.object({ message: t.string() }),
+  t.object({ autocloseDelay: t.number().optional(4000), sticky: t.boolean().optional() }),
+]);
+class FromComposedSchema {
+  props = useProps(ComposedSchema.toShape());
+}
+declare const fromComposedSchema: FromComposedSchema;
+assertEq<typeof fromComposedSchema.props.message, string>();
+assertEq<typeof fromComposedSchema.props.autocloseDelay, number>();
+assertEq<typeof fromComposedSchema.props.sticky, boolean | undefined>();
+
+void [ok1, ok2, ok3, ok4, ko1, ko2, ko3, ko4, _staticPropCheck, _configCheck, _registryCheck];
+void [fromObjectSchema, fromComposedSchema];

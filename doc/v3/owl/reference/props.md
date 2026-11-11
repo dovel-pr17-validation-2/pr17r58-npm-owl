@@ -1,0 +1,464 @@
+# Props
+
+## Overview
+
+In Owl, `props` (short for _properties_) is an object which contains every piece
+of data given to a component by its parent.
+
+```js
+import { Component, useProps, t, xml } from "@odoo/owl";
+
+class Child extends Component {
+  static template = xml`<span t-out="this.props.message"/>`;
+  props = useProps({ message: t.string() });
+}
+
+class Parent extends Component {
+  static template = xml`<Child message="'hello'"/>`;
+  static components = { Child };
+}
+```
+
+In this example, the `Child` component receives a `message` prop from its parent.
+Props are collected into an object by Owl, with each value being evaluated in the
+context of the parent. So, `this.props.message` is equal to `'hello'`.
+
+The `useProps` function must be called at the top level of the component class body
+(or inside `setup`). It returns an object with getters for each declared prop.
+Reading one of these getters is reactive: templates, computed values, and
+effects that read `this.props.someProp` subscribe to that prop and are notified
+when the parent applies a new value.
+
+## Definition
+
+Props are the attributes defined on a component tag in a template. Every
+attribute that does not start with `t-` (which are QWeb directives) is
+considered a prop. Each prop value is a JavaScript expression evaluated in
+the context of the parent component.
+
+```xml
+<div>
+    <ComponentA a="this.state.a" b="'string'"/>
+    <ComponentB t-if="this.state.flag" model="this.model"/>
+</div>
+```
+
+In this example:
+
+- `ComponentA` receives props `a` and `b`,
+- `ComponentB` receives prop `model` (`t-if` is a directive, not a prop).
+
+## The `useProps` function
+
+To access props inside a component, call the `useProps` function. It returns an
+object with getters for each prop.
+
+```js
+import { Component, useProps, xml } from "@odoo/owl";
+
+class MyComponent extends Component {
+  static template = xml`<span t-out="this.props.name"/>`;
+  props = useProps();
+}
+```
+
+The `useProps` function accepts one optional argument:
+
+### Schema
+
+A schema describing the expected props. It can be:
+
+- **nothing**: accepts any props, no validation.
+- **an array of strings**: declares expected keys, all required.
+- **an object**: maps keys to [type validators](types_validation.md#validators)
+  for full type checking. A prop is made optional with
+  [`.optional()`](types_validation.md#optionalvalue) on its type.
+
+Props are validated in [dev mode](app.md#configuration) whenever the component
+is created or updated. See [Props validation](#props-validation) for details.
+
+```js
+useProps(); // no schema
+useProps(["name", "age"]); // array form
+useProps({ name: t.string(), age: t.number().optional() }); // typed form
+```
+
+To reuse a schema defined elsewhere (for instance one also passed to
+[`applyDefaults`](types_validation.md#applydefaults)), pass its shape with
+[`.toShape()`](types_validation.md#toshape). It is available on object schemas
+([`t.object`](types_validation.md#tobjectshape),
+[`t.strictObject`](types_validation.md#tstrictobjectshape)) and on intersections
+of them ([`t.and`](types_validation.md#tandtypes)):
+
+```js
+useProps(NotificationSchema.toShape()); // a t.object / t.strictObject schema
+useProps(t.and([BaseSchema, ExtraSchema]).toShape()); // a composed schema
+```
+
+### Default values
+
+Default values are declared in the schema itself, by giving a value to the
+[`.optional()`](types_validation.md#optionalvalue) method of the type: when a
+prop is not provided by the parent (or is `undefined`), the default value is
+used instead.
+
+```js
+useProps({ color: t.string().optional("red") });
+```
+
+Mutable defaults (`[]`, `{}`) should be given as a factory, so that each
+component instance gets its own value. The factory is called once per
+component instance:
+
+```js
+useProps({ items: t.array(t.string()).optional(() => []) });
+```
+
+Note that the array form of the schema cannot express defaults or optional
+keys: use the typed form when a prop needs either.
+
+### Reactive reads
+
+The object returned by `useProps()` exposes signal-backed getters. This means that
+any reactive context that reads a prop will update when that prop changes:
+
+```js
+import { Component, computed, useProps, t, xml } from "@odoo/owl";
+
+class Total extends Component {
+  static template = xml`<span t-out="this.double()"/>`;
+
+  props = useProps({ value: t.number() });
+  double = computed(() => this.props.value * 2);
+}
+```
+
+When the parent re-renders with a different `value`, `this.props.value` is
+updated and the `double` computed value is invalidated. The same applies to
+[`effect`](effects.md) and [`useEffect`](effects.md#useeffect):
+reading `this.props.value` inside the effect subscribes the effect to future
+updates of that prop.
+
+This only applies to props accessed through `useProps()`. The singular
+[`useProps.static()`](#the-usepropsstatic-method) helper keeps its static, reference-stable
+semantics.
+
+## The `useProps.static` method
+
+`useProps.static` is an alternative for components that only need to read a
+single prop and expect that prop to stay **static** — meaning the reference
+passed by the parent does not change across renders. It takes the prop name
+explicitly and an optional [type validator](types_validation.md#validators).
+If the type is omitted, the prop is accepted as-is without validation. A
+default value can be declared in the type with
+[`.optional(value)`](types_validation.md#optionalvalue).
+
+```js
+import { Component, useProps, t, xml } from "@odoo/owl";
+
+class TodoView extends Component {
+  static template = xml`<div t-out="this.todo.title"/>`;
+  todo = useProps.static("todo", t.instanceOf(Todo));
+}
+
+class Header extends Component {
+  static template = xml`<h1 t-out="this.label"/>`;
+  label = useProps.static("label", t.string().optional("untitled"));
+}
+
+class Passthrough extends Component {
+  static template = xml`<div t-out="this.payload"/>`;
+  payload = useProps.static("payload"); // no type: any value accepted
+}
+```
+
+Each `useProps.static()` call declares one prop. The value is read once, at component
+construction time, and assigned directly to the class field — so `this.todo`
+is the `Todo` instance, not a getter or accessor.
+
+### Static semantics
+
+In [dev mode](app.md#configuration), `useProps.static()` does two things:
+
+- validates the initial value against the declared type,
+- registers a check that throws if the prop's reference changes on a
+  subsequent parent render.
+
+This makes `useProps.static()` a good fit for values the child treats as identity-stable
+(`instanceOf` models, event buses, or [signals](signals.md)). If a
+[signal](signals.md) is passed, the signal object itself stays the
+same across renders even as its inner value updates — which is exactly what
+`useProps.static()` requires.
+
+In production mode, the type check and the immutability check are skipped
+entirely.
+
+### When to use `useProps.static()` vs `useProps()`
+
+Use `useProps()` when the child needs to observe prop changes (the parent
+re-renders with a new value and the child must reflect it), when computed values
+or effects should react to prop changes, or when the child declares several
+props at once.
+
+Use `useProps.static()` when:
+
+- the child only needs one (or a few) specific props,
+- the prop is conceptually static — a model instance, a signal, an event bus,
+- you want dev mode to flag unexpected reference changes.
+
+`useProps.static()` and `useProps()` can be mixed freely in the same component.
+
+## Translatable props
+
+When you need to pass a user-facing string to a subcomponent, you likely want it
+to be translated. Unfortunately, because props are arbitrary expressions, it wouldn't
+be practical for Owl to find out which parts of the expression are strings and translate
+them, and it also makes it difficult for tooling to extract these strings to generate
+terms to translate. While you can work around this issue by doing the translation in
+JavaScript, or by using `t-set` with a body (the body of `t-set` is translated),
+and passing the variable as a prop, this is a sufficiently common use case that Owl
+provides a suffix for this purpose: `.translate`.
+
+```xml
+<t t-name="ParentComponent">
+    <Child someProp.translate="some message"/>
+</t>
+```
+
+Note that the content of this attribute is _NOT_ treated as a JavaScript expression:
+it is treated as a string, as if it was an attribute on an HTML element, and translated
+before being passed to the component. If you need to interpolate some data into the
+string, you will still have to do this in JavaScript.
+
+## Dynamic Props
+
+The `t-props` directive can be used to specify totally dynamic props:
+
+```xml
+<div t-name="ParentComponent">
+    <Child t-props="this.some.obj"/>
+</div>
+```
+
+```js
+class ParentComponent extends Component {
+  static components = { Child };
+  some = { obj: { a: 1, b: 2 } };
+}
+```
+
+## Props Validation
+
+As an application becomes complex, it may be quite unsafe to define props in an
+informal way. This leads to two issues:
+
+- hard to tell how a component should be used, by looking at its code,
+- unsafe: it is easy to send wrong props into a component, either by refactoring
+  a component, or one of its parents.
+
+A prop type system solves both issues, by describing the types and shapes
+of the props. Here is how it works in Owl:
+
+- the `useProps` function accepts an optional schema as its first argument,
+- props are validated whenever a component is created or updated,
+- props are only validated in `dev` mode (see [how to configure an app](app.md#configuration)),
+- if a prop does not match the schema, an error is thrown.
+
+```js
+class ProductList extends Component {
+  static template = xml`...`;
+
+  props = useProps({
+    count: t.number(),
+    items: t.array(t.object({ id: t.number(), label: t.string() })),
+    onSelect: t.function().optional(),
+    size: t.selection(["small", "medium", "large"]),
+  });
+}
+```
+
+Validators compose, so non-trivial prop shapes are supported as well. A prop can
+be a [signal](signals.md) carrying a typed value, a function with
+typed parameters and return value, a union, or a custom-validated value:
+
+```js
+class Counter extends Component {
+  static template = xml`...`;
+
+  props = useProps({
+    // a signal whose value must be a number
+    count: t.signal(t.number()),
+    // a callback: (id: number) => boolean — params/return are inferred in TS
+    onToggle: t.function([t.number()], t.boolean()).optional(),
+    // a union of several accepted types
+    label: t.or([t.string(), t.number()]),
+    // a value passing both a base type and a custom predicate
+    ratio: t
+      .customValidator(t.number(), (v) => v >= 0 && v <= 1, "ratio must be in [0, 1]")
+      .optional(),
+  });
+}
+```
+
+For function and signal props, the inner types (`t.function([...], ...)` params
+and return, `t.signal(...)` value) are used for TypeScript inference only — they
+are not checked at runtime. See [Types Validation](types_validation.md) for the
+complete list of validators and their exact runtime behaviour.
+
+### `slots` prop
+
+If a component that uses [slots](slots.md) also validates its props, the
+`slots` prop must be explicitly included in the schema, since slots are
+provided to a component [as props](slots.md#slots-and-props).
+
+```js
+class MyComponent extends Component {
+  static template = xml`...`;
+  props = useProps(["someProp", "slots"]);
+}
+```
+
+Or with type validation:
+
+```js
+class MyComponent extends Component {
+  static template = xml`...`;
+  props = useProps({
+    someProp: t.number().optional(),
+    slots: t.object().optional(),
+  });
+}
+```
+
+Note that it is not mandatory, if a component does not need to forward its
+slots to a child, there is usually no need to mention them in the useProps
+function.
+
+## Props comparison
+
+Whenever Owl encounters a subcomponent in a template, it performs a shallow
+comparison of all props. If they are all referentially equal, then the subcomponent
+will not even be updated. Otherwise, if at least one prop has changed, then
+Owl will update it.
+
+However, in some cases, we know that two values are different, but they have the
+same effect, and should not be considered different by Owl. For example, anonymous
+functions in a template are always different, but most of them should not be
+considered different:
+
+```xml
+<t t-foreach="todos" t-as="todo" t-key="todo.id">
+  <Todo todo="todo" onDelete="() => this.deleteTodo(todo.id)" />
+</t>
+```
+
+In that case, one can use the `.alike` suffix:
+
+```xml
+<t t-foreach="todos" t-as="todo" t-key="todo.id">
+  <Todo todo="todo" onDelete.alike="() => this.deleteTodo(todo.id)" />
+</t>
+```
+
+This tells Owl that this specific prop should always be considered equivalent
+(or, in other words, should be removed from the list of comparable props).
+
+Note that even if most anonymous functions should probably be considered `alike`,
+it is not necessarily true in all cases. It depends on what values are captured
+by the anonymous function. The following example shows a case where it is probably
+wrong to use `.alike`.
+
+```xml
+<t t-foreach="todos" t-as="todo" t-key="todo.id">
+  <!-- Probably wrong! todo.isCompleted may change -->
+  <Todo todo="todo" toggle.alike="() => this.toggleTodo(todo.isCompleted)" />
+</t>
+```
+
+## Binding function props
+
+It is common to have the need to pass a callback as a prop. Since Owl components
+are class based, the callback frequently needs to be bound to its owner component.
+So, one can do this:
+
+```js
+class SomeComponent extends Component {
+  static template = xml`
+    <div>
+      <Child callback="this.doSomething"/>
+    </div>`;
+
+  setup() {
+    this.doSomething = this.doSomething.bind(this);
+  }
+
+  doSomething() {
+    // ...
+  }
+}
+```
+
+However, this is such a common use case that Owl provides a special suffix to do
+just that: `.bind`. This looks like this:
+
+```js
+class SomeComponent extends Component {
+  static template = xml`
+    <div>
+      <Child callback.bind="this.doSomething"/>
+    </div>`;
+
+  doSomething() {
+    // ...
+  }
+}
+```
+
+The `.bind` suffix also implies `.alike`, so these props will not cause additional
+renderings.
+
+## Promoting values to signals
+
+Generic components often declare their props as [signals](signals.md):
+
+```js
+class Counter extends Component {
+  static template = xml`<span t-out="this.props.count()"/>`;
+  props = useProps({ count: t.signal(t.number()) });
+}
+```
+
+A signal-based prop API is generally preferable: when the signal value changes,
+only the components that subscribe to it re-render — the parent that passes the
+signal along stays untouched. Generic components tend to expose their inputs as
+signals for this reason.
+
+Not every caller has a signal handy, though. The `.signal` suffix wraps a plain
+value at the call site:
+
+```xml
+<Counter count.signal="this.state.count"/>
+```
+
+Owl creates the signal once per call site (per loop iteration inside a
+`t-foreach`), keeps it across renders, and updates its value on each parent
+render. The signal reference is stable, so `effect` and `computed` subscriptions
+inside the child remain valid across parent updates.
+
+`.signal` is an adapter, not a parent-side performance optimization: the parent
+still re-renders when its own state changes, and that re-render is what updates
+the wrapper's value. The suffix simply lets you use a signal-API component from
+a context where the data is not yet a signal.
+
+## Good Practices
+
+A `props` object is a collection of values that come from the parent. As such,
+they are owned by the parent, and should never be modified by the child.
+
+Props should be considered readonly, from the perspective of the child component.
+If there is a need to modify them, then the request to update them should be
+sent to the parent (for example, with an event).
+
+Any value can go in a prop. Strings, objects, classes, or even callbacks could
+be given to a child component (but then, in the case of callbacks, communicating
+with events seems more appropriate).

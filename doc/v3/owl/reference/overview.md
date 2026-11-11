@@ -1,0 +1,74 @@
+# Overview
+
+Here is a list of everything exported by the Owl library.
+
+## Core
+
+- [`App`](app.md): an Owl application (root components, templates, and config)
+- [`Component`](component.md): base class for Owl components
+- [`Suspense`](suspense.md): render a fallback while descendants' `onWillStart` is pending
+- [`ErrorBoundary`](error_boundary.md): render a fallback when descendants throw
+- [`Portal`](portal.md): render content into a target DOM element elsewhere on the page
+- [`mount`](app.md#mount-helper): mount a component to a DOM target
+- [`xml`](template_syntax.md#inline-templates): define an inline template
+- [`useProps`](props.md): declare and validate component props
+- [`useProps.static`](props.md#the-usepropsstatic-method): declare a single static prop on a component
+
+## Reactivity
+
+- [`signal`](signals.md): create a reactive value
+- [`computed`](computed_values.md): create a lazily-evaluated derived value
+- [`asyncComputed`](computed_values.md#async-computed-values): like `computed`, but the deriver returns a `Promise`
+- [`proxy`](proxies.md): create a reactive proxy for an object
+- [`effect`](effects.md): create a side effect that re-runs when dependencies change
+- [`immediateEffect`](effects.md#immediate-effects): like `effect`, but re-runs synchronously on write
+- [`markRaw`](proxies.md#markraw): mark an object so it is ignored by the reactivity system
+- [`toRaw`](proxies.md#toraw): given a proxy, return the underlying non-reactive object
+- [`untrack`](effects.md#untrack): execute a function without tracking reactive dependencies
+
+## Lifecycle Hooks
+
+- [`onWillStart`](component.md#willstart): async, before first rendering
+- [`onMounted`](component.md#mounted): after component is rendered and added to the DOM
+- [`onWillPatch`](component.md#willpatch): before the DOM is patched
+- [`onPatched`](component.md#patched): after the DOM is patched
+- [`onWillUnmount`](component.md#willunmount): before removing component from DOM
+- [`onWillDestroy`](component.md#willdestroy): before component is destroyed
+- [`onError`](component.md#onerror): catch and handle errors
+
+## Other Hooks
+
+- [`useEffect`](hooks.md#useeffect): create a reactive effect, cleaned up on destroy
+- [`useImmediateEffect`](hooks.md#useimmediateeffect): like `useEffect`, for an immediate effect
+- [`useOnChange`](hooks.md#useonchange): run a callback when some dependencies change
+- [`useListener`](hooks.md#uselistener): add a listener to a target, removed on destroy
+- [`useApp`](hooks.md#useapp): get the current App instance
+- [`useScope`](scope.md): get the current scope (for async cancellation, captured execution)
+
+## Scope and Lifetime
+
+- [`Scope`](scope.md): lifetime handle for components and plugins
+- [`getScope`](scope.md#getscope-scope-null): return the current scope, or `null` if none is active
+
+## Plugins
+
+- [`Plugin`](plugins.md): base class for plugins
+- [`usePlugin`](plugins.md): import a plugin dependency
+- [`providePlugins`](plugins.md): make plugins available to a component subtree
+- [`useConfig`](plugins.md#configuration): read a value from the plugin manager's config
+
+## Type Validation
+
+- [`types`](types_validation.md#validators): built-in type validators
+- [`validateType`](types_validation.md#validatetype): check a value against a type validator
+- [`assertType`](types_validation.md#asserttype): like validateType, but throws on failure
+
+## Utilities
+
+- [`EventBus`](utils.md#eventbus): a simple event bus
+- [`markup`](utils.md#markup): mark a string as safe HTML (not escaped by `t-out`)
+- [`htmlEscape`](utils.md#htmlescape): escape a value into a safe HTML string
+- [`batched`](utils.md#batched): batch function calls into a single microtask execution
+- [`whenReady`](utils.md#whenready): execute code when the DOM is ready
+- [`Registry`](registries.md): ordered key-value collection with reactivity
+- [`Resource`](resources.md): ordered set collection with reactivity

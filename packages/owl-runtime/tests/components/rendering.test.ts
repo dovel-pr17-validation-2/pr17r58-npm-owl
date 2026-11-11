@@ -1,0 +1,570 @@
+import {
+  Component,
+  mount,
+  onWillStart,
+  onWillUpdateProps,
+  OwlError,
+  proxy,
+  signal,
+  t,
+  useProps,
+  xml,
+} from "../../src";
+import {
+  getConsoleOutput,
+  makeDeferred,
+  makeTestFixture,
+  nextMicroTick,
+  nextTick,
+  render,
+  snapshotEverything,
+  steps,
+  useLogLifecycle,
+} from "../helpers";
+
+let fixture: HTMLElement;
+
+snapshotEverything();
+
+beforeEach(() => {
+  fixture = makeTestFixture();
+});
+
+describe("rendering semantics", () => {
+  test("can render a parent without rendering child", async () => {
+    class Child extends Component {
+      static template = xml`child`;
+      setup() {
+        useLogLifecycle();
+      }
+    }
+
+    class Parent extends Component {
+      static template = xml`
+        <t t-out="this.state.value"/>
+        <Child/>
+      `;
+      static components = { Child };
+
+      state = proxy({ value: "A" });
+      setup() {
+        useLogLifecycle();
+      }
+    }
+
+    const parent = await mount(Parent, fixture);
+
+    expect(fixture.innerHTML).toBe("Achild");
+    expect(steps.splice(0)).toMatchInlineSnapshot(`
+      [
+        "Parent:setup",
+        "Parent:willStart",
+        "Child:setup",
+        "Child:willStart",
+        "Child:mounted",
+        "Parent:mounted",
+      ]
+    `);
+
+    parent.state.value = "B";
+    await nextTick();
+    expect(fixture.innerHTML).toBe("Bchild");
+    expect(steps.splice(0)).toMatchInlineSnapshot(`
+      [
+        "Parent:willPatch",
+        "Parent:patched",
+      ]
+    `);
+  });
+
+  test("can force a render to update sub tree", async () => {
+    let childN = 0;
+    let parentN = 0;
+    class Child extends Component {
+      static template = xml`<t t-set="noop" t-value="this.notify()"/>child`;
+      notify() {
+        childN++;
+      }
+    }
+
+    class Parent extends Component {
+      static template = xml`
+        <t t-out="this.state.value"/>
+        <Child/>
+        <t t-set="noop" t-value="this.notify()"/>
+      `;
+      static components = { Child };
+
+      state = { value: "A" };
+      notify() {
+        parentN++;
+      }
+    }
+
+    const parent = await mount(Parent, fixture);
+
+    expect(fixture.innerHTML).toBe("Achild");
+    expect(parentN).toBe(1);
+    expect(childN).toBe(1);
+
+    parent.state.value = "B";
+    render(parent, true);
+    await nextTick();
+    expect(fixture.innerHTML).toBe("Bchild");
+    expect(parentN).toBe(2);
+    expect(childN).toBe(2);
+  });
+
+  test("render with deep=true followed by render with deep=false work as expected", async () => {
+    class Child extends Component {
+      static template = xml`child<t t-out="this.state.getValue()"/>`;
+      state = state;
+      setup() {
+        useLogLifecycle();
+      }
+    }
+
+    class Parent extends Component {
+      static template = xml`parent<t t-out="this.state.value"/><Child/>`;
+      static components = { Child };
+
+      state = proxy({ value: "A" });
+
+      setup() {
+        useLogLifecycle();
+      }
+    }
+    let value = 3;
+    const state = {
+      getValue() {
+        return value;
+      },
+    };
+
+    const parent = await mount(Parent, fixture);
+
+    expect(fixture.innerHTML).toBe("parentAchild3");
+    expect(steps.splice(0)).toMatchInlineSnapshot(`
+      [
+        "Parent:setup",
+        "Parent:willStart",
+        "Child:setup",
+        "Child:willStart",
+        "Child:mounted",
+        "Parent:mounted",
+      ]
+    `);
+
+    value = 4;
+    render(parent, true);
+
+    // wait for child to be rendered, but dom not yet patched
+    await nextMicroTick();
+    await nextMicroTick();
+    await nextMicroTick();
+    expect(steps.splice(0)).toMatchInlineSnapshot(`
+      [
+        "Child:willUpdateProps",
+      ]
+    `);
+
+    parent.state.value = "B";
+
+    await nextTick();
+
+    expect(fixture.innerHTML).toBe("parentBchild4");
+    expect(steps.splice(0)).toMatchInlineSnapshot(`
+      [
+        "Child:willUpdateProps",
+        "Parent:willPatch",
+        "Child:willPatch",
+        "Child:patched",
+        "Parent:patched",
+      ]
+    `);
+  });
+
+  test("props are proxy", async () => {
+    class Child extends Component {
+      static template = xml`<t t-out="this.props.a.b"/>`;
+      props = useProps();
+      setup() {
+        useLogLifecycle();
+      }
+    }
+
+    class Parent extends Component {
+      static template = xml`
+        <Child a="this.state"/>
+      `;
+      static components = { Child };
+
+      state = proxy({ b: 1 });
+      setup() {
+        useLogLifecycle();
+      }
+    }
+
+    const parent = await mount(Parent, fixture);
+    expect(fixture.innerHTML).toBe("1");
+    expect(steps.splice(0)).toMatchInlineSnapshot(`
+      [
+        "Parent:setup",
+        "Parent:willStart",
+        "Child:setup",
+        "Child:willStart",
+        "Child:mounted",
+        "Parent:mounted",
+      ]
+    `);
+
+    parent.state.b = 3;
+    await nextTick();
+    expect(fixture.innerHTML).toBe("3");
+    expect(steps.splice(0)).toMatchInlineSnapshot(`
+      [
+        "Child:willPatch",
+        "Child:patched",
+      ]
+    `);
+  });
+
+  test("props are proxy (nested prop)", async () => {
+    class Child extends Component {
+      static template = xml`<t t-out="this.props.a.b.c"/>`;
+      props = useProps();
+
+      setup() {
+        useLogLifecycle();
+      }
+    }
+
+    class Parent extends Component {
+      static template = xml`
+        <Child a="this.state"/>
+      `;
+      static components = { Child };
+
+      state = proxy({ b: { c: 1 } });
+
+      setup() {
+        useLogLifecycle();
+      }
+    }
+
+    const parent = await mount(Parent, fixture);
+    expect(fixture.innerHTML).toBe("1");
+    expect(steps.splice(0)).toMatchInlineSnapshot(`
+      [
+        "Parent:setup",
+        "Parent:willStart",
+        "Child:setup",
+        "Child:willStart",
+        "Child:mounted",
+        "Parent:mounted",
+      ]
+    `);
+
+    parent.state.b.c = 3; // parent is now subscribed to 'b' key
+    await nextTick();
+    expect(fixture.innerHTML).toBe("3");
+    expect(steps.splice(0)).toMatchInlineSnapshot(`
+      [
+        "Child:willPatch",
+        "Child:patched",
+      ]
+    `);
+
+    parent.state.b = { c: 444 }; // triggers a parent and a child render
+    await nextTick();
+    expect(fixture.innerHTML).toBe("444");
+    expect(steps.splice(0)).toMatchInlineSnapshot(`
+      [
+        "Child:willPatch",
+        "Child:patched",
+      ]
+    `);
+  });
+
+  test("works as expected for dynamic number of props", async () => {
+    class Child extends Component {
+      static template = xml`<t t-out="Object.keys(this.props).length"/>`;
+      props = useProps();
+    }
+
+    class Parent extends Component {
+      static template = xml`
+        <Child t-props="this.state"/>
+      `;
+      static components = { Child };
+
+      state: any = proxy({ b: 1 });
+    }
+
+    const parent = await mount(Parent, fixture);
+    expect(fixture.innerHTML).toBe("1");
+    parent.state.newkey = 3;
+    await nextTick();
+    expect(fixture.innerHTML).toBe("2");
+  });
+
+  test("rendering is atomic (for one subtree)", async () => {
+    const def = makeDeferred();
+
+    class C extends Component {
+      static template = xml`<t t-out="this.props.obj.val"/>`;
+      props = useProps();
+
+      setup() {
+        useLogLifecycle();
+      }
+    }
+
+    class B extends Component {
+      static template = xml`<C obj="this.props.obj"/>`;
+      static components = { C };
+      props = useProps();
+
+      setup() {
+        useLogLifecycle();
+        onWillUpdateProps(() => def);
+      }
+    }
+
+    class A extends Component {
+      static template = xml`<t t-out="this.state.obj.val"/><B obj="this.state.obj"/>`;
+      static components = { B };
+
+      state = proxy({ obj: { val: 1 } });
+
+      setup() {
+        useLogLifecycle();
+      }
+    }
+
+    const parent = await mount(A, fixture);
+    expect(fixture.innerHTML).toBe("11");
+    expect(steps.splice(0)).toMatchInlineSnapshot(`
+      [
+        "A:setup",
+        "A:willStart",
+        "B:setup",
+        "B:willStart",
+        "C:setup",
+        "C:willStart",
+        "C:mounted",
+        "B:mounted",
+        "A:mounted",
+      ]
+    `);
+
+    parent.state.obj.val = 3;
+    await nextTick();
+    expect(fixture.innerHTML).toBe("33");
+    expect(steps.splice(0)).toMatchInlineSnapshot(`
+      [
+        "A:willPatch",
+        "A:patched",
+        "C:willPatch",
+        "C:patched",
+      ]
+    `);
+
+    def.resolve();
+    await nextTick();
+    expect(steps.splice(0)).toMatchInlineSnapshot(`[]`);
+  });
+});
+
+test("force render in case of existing render", async () => {
+  const def = makeDeferred();
+
+  class C extends Component {
+    static template = xml`C`;
+    setup() {
+      useLogLifecycle();
+    }
+  }
+  class B extends Component {
+    static template = xml`<C/><t t-out="this.props.val"/>`;
+    static components = { C };
+    props = useProps();
+    setup() {
+      useLogLifecycle();
+      onWillUpdateProps(() => def);
+    }
+  }
+  class A extends Component {
+    static template = xml`<B val="this.state.val"/>`;
+    static components = { B };
+    state = proxy({ val: 1 });
+    setup() {
+      useLogLifecycle();
+    }
+  }
+  const parent = await mount(A, fixture);
+  expect(fixture.innerHTML).toBe("C1");
+  expect(steps.splice(0)).toMatchInlineSnapshot(`
+    [
+      "A:setup",
+      "A:willStart",
+      "B:setup",
+      "B:willStart",
+      "C:setup",
+      "C:willStart",
+      "C:mounted",
+      "B:mounted",
+      "A:mounted",
+    ]
+  `);
+
+  // trigger a new rendering, blocked in B
+  parent.state.val = 2;
+  await nextTick();
+  expect(steps.splice(0)).toMatchInlineSnapshot(`
+    [
+      "B:willUpdateProps",
+    ]
+  `);
+
+  // initiate a new render with deep=true. it should cancel the current render
+  // and also be blocked in B
+  render(parent, true);
+  await nextTick();
+  expect(steps.splice(0)).toMatchInlineSnapshot(`
+    [
+      "B:willUpdateProps",
+    ]
+  `);
+
+  def.resolve();
+  await nextTick();
+  // we check here that the render reaches C (so, that it was properly forced)
+  expect(steps.splice(0)).toMatchInlineSnapshot(`
+    [
+      "C:willUpdateProps",
+      "A:willPatch",
+      "B:willPatch",
+      "C:willPatch",
+      "C:patched",
+      "B:patched",
+      "A:patched",
+    ]
+  `);
+});
+
+test("children, default props and renderings", async () => {
+  class Child extends Component {
+    static template = xml`child`;
+    props = useProps({
+      value: { optional: true, defaultValue: 1 },
+    });
+    setup() {
+      useLogLifecycle();
+    }
+  }
+
+  class Parent extends Component {
+    static template = xml`
+      <t t-out="this.state.value"/>
+      <Child />
+    `;
+    static components = { Child };
+
+    state = proxy({ value: "A" });
+    setup() {
+      useLogLifecycle();
+    }
+  }
+
+  const parent = await mount(Parent, fixture);
+
+  expect(fixture.innerHTML).toBe("Achild");
+  expect(steps.splice(0)).toMatchInlineSnapshot(`
+    [
+      "Parent:setup",
+      "Parent:willStart",
+      "Child:setup",
+      "Child:willStart",
+      "Child:mounted",
+      "Parent:mounted",
+    ]
+  `);
+
+  parent.state.value = "B";
+  await nextTick();
+  expect(fixture.innerHTML).toBe("Bchild");
+  expect(steps.splice(0)).toMatchInlineSnapshot(`
+    [
+      "Parent:willPatch",
+      "Parent:patched",
+    ]
+  `);
+});
+
+describe("render loop detection", () => {
+  test("throws a clear error instead of freezing on a render loop (#1968)", async () => {
+    class Child extends Component {
+      static template = xml`<t t-out="this.props.value"/>`;
+      props = useProps({ value: t.number(), inc: t.function() });
+      setup() {
+        // Updating parent state during setup retriggers the parent render, which
+        // recreates this child, whose setup runs again: an infinite render loop.
+        this.props.inc();
+      }
+    }
+    class Root extends Component {
+      static components = { Child };
+      static template = xml`<Child value="this.value()" inc="this.inc"/>`;
+      value = signal(1);
+      // arrow so it stays bound to the Root instance when called from the child
+      inc = () => this.value.set(this.value() + 1);
+    }
+
+    let error: any;
+    // Before the fix this never resolves (the tab freezes); now it rejects.
+    await mount(Root, fixture, { test: true }).catch((e) => (error = e));
+
+    expect(error).toBeInstanceOf(OwlError);
+    expect(error.message).toMatch(/render loop/);
+    expect(error.message).toContain("Root");
+    expect(getConsoleOutput()).toEqual([]);
+  });
+
+  test("wide re-render under an uncommitted root is not a render loop", async () => {
+    // 1001 children each re-rendering once while the root fiber is held open
+    // by an async sibling. Each child renders only twice: no loop. A counter
+    // shared at the root level would add up all sibling re-renders and reach
+    // the limit anyway (false positive), so the count must stay per fiber.
+    const shared = signal(0);
+    const def = makeDeferred();
+
+    class Child extends Component {
+      static template = xml`<t t-out="this.shared()"/>`;
+      shared = shared;
+    }
+    class AsyncChild extends Component {
+      static template = xml`async`;
+      setup() {
+        onWillStart(() => def);
+      }
+    }
+    class Root extends Component {
+      static components = { Child, AsyncChild };
+      static template = xml`
+        <t t-foreach="this.ids" t-as="i" t-key="i"><Child/></t>
+        <AsyncChild/>`;
+      ids = [...Array(1001).keys()];
+    }
+
+    const promise = mount(Root, fixture, { test: true });
+    await nextTick(); // all Child fibers rendered; root fiber waits on AsyncChild
+    shared.set(1); // every Child re-renders exactly once
+    await nextTick();
+
+    def.resolve();
+    await promise;
+    expect(fixture.textContent).toContain("async");
+    expect(getConsoleOutput()).toEqual([]);
+  });
+});

@@ -1,0 +1,794 @@
+import { vi, type Mock } from "vitest";
+import { proxy, computed, effect, shallowEqual, signal } from "../src";
+import {
+  atomSymbol,
+  ComputationAtom,
+  ComputationFlags,
+  createComputation,
+  disposeComputation,
+  removeSources,
+  ReactiveValue,
+  setComputation,
+  updateComputation,
+} from "../src/computations";
+import { expectSpy, nextMicroTick, spyEffect } from "./helpers";
+
+async function waitScheduler() {
+  await nextMicroTick();
+  await nextMicroTick();
+}
+
+export type SpyComputed<T> = ReactiveValue<T> & { spy: Mock };
+export function spyComputed<T>(fn: () => T): SpyComputed<T> {
+  const spy = vi.fn(fn);
+  const d = computed(spy) as SpyComputed<T>;
+  d.spy = spy;
+  return d;
+}
+
+test("computed returns correct initial value", () => {
+  const state = proxy({ a: 1, b: 2 });
+  const d = computed(() => state.a + state.b);
+  expect(d()).toBe(3);
+});
+
+test("computed should not run until being called", () => {
+  const state = proxy({ a: 1 });
+  const d = spyComputed(() => state.a + 100);
+  expect(d.spy).not.toHaveBeenCalled();
+  expect(d()).toBe(101);
+  expect(d.spy).toHaveBeenCalledTimes(1);
+});
+
+test("computed updates when dependencies change", async () => {
+  const state = proxy({ a: 1, b: 2 });
+
+  const d = spyComputed(() => state.a * state.b);
+  const e = spyEffect(() => d());
+  e();
+
+  expectSpy(e.spy, 1);
+  expectSpy(d.spy, 1, { result: 2 });
+  state.a = 3;
+  await waitScheduler();
+  expectSpy(e.spy, 2);
+  expectSpy(d.spy, 2, { result: 6 });
+  state.b = 4;
+  await waitScheduler();
+  expectSpy(e.spy, 3);
+  expectSpy(d.spy, 3, { result: 12 });
+});
+
+test("computed should not update even if the effect updates", async () => {
+  const state = proxy({ a: 1, b: 2 });
+  const d = spyComputed(() => state.a);
+  const e = spyEffect(() => state.b + d());
+  e();
+  expectSpy(e.spy, 1);
+  expectSpy(d.spy, 1, { result: 1 });
+  // change unrelated state
+  state.b = 3;
+  await waitScheduler();
+  expectSpy(e.spy, 2);
+  expectSpy(d.spy, 1, { result: 1 });
+});
+
+test("computed does not update when unrelated property changes, but updates when dependencies change", async () => {
+  const state = proxy({ a: 1, b: 2, c: 3 });
+  const d = spyComputed(() => state.a + state.b);
+  const e = spyEffect(() => d());
+  e();
+
+  expectSpy(e.spy, 1);
+  expectSpy(d.spy, 1, { result: 3 });
+
+  state.c = 10;
+  await waitScheduler();
+  expectSpy(e.spy, 1);
+  expectSpy(d.spy, 1, { result: 3 });
+});
+
+test("computed does not notify when value is unchanged", async () => {
+  const state = proxy({ a: 1, b: 2 });
+  const d = spyComputed(() => state.a + state.b);
+  const e = spyEffect(() => d());
+  e();
+  expectSpy(e.spy, 1);
+  expectSpy(d.spy, 1, { result: 3 });
+  state.a = 1;
+  state.b = 2;
+  await waitScheduler();
+  expectSpy(e.spy, 1);
+  expectSpy(d.spy, 1, { result: 3 });
+});
+
+test("multiple deriveds can depend on same state", async () => {
+  const state = proxy({ a: 1, b: 2 });
+  const d1 = spyComputed(() => state.a + state.b);
+  const d2 = spyComputed(() => state.a * state.b);
+  const e1 = spyEffect(() => d1());
+  const e2 = spyEffect(() => d2());
+  e1();
+  e2();
+  expectSpy(e1.spy, 1);
+  expectSpy(d1.spy, 1, { result: 3 });
+  expectSpy(e2.spy, 1);
+  expectSpy(d2.spy, 1, { result: 2 });
+  state.a = 3;
+  await waitScheduler();
+  expectSpy(e1.spy, 2);
+  expectSpy(d1.spy, 2, { result: 5 });
+  expectSpy(e2.spy, 2);
+  expectSpy(d2.spy, 2, { result: 6 });
+});
+
+test("computed can depend on arrays", async () => {
+  const state = proxy({ arr: [1, 2, 3] });
+  const d = spyComputed(() => state.arr.reduce((a, b) => a + b, 0));
+  const e = spyEffect(() => d());
+  e();
+  expectSpy(e.spy, 1);
+  expectSpy(d.spy, 1, { result: 6 });
+  state.arr.push(4);
+  await waitScheduler();
+  expectSpy(e.spy, 2);
+  expectSpy(d.spy, 2, { result: 10 });
+  state.arr[0] = 10;
+  await waitScheduler();
+  expectSpy(e.spy, 3);
+  expectSpy(d.spy, 3, { result: 19 });
+});
+
+test("computed can depend on nested proxys", async () => {
+  const state = proxy({ nested: { a: 1 } });
+  const d = spyComputed(() => state.nested.a * 2);
+  const e = spyEffect(() => d());
+  e();
+  expectSpy(e.spy, 1);
+  expectSpy(d.spy, 1, { result: 2 });
+  state.nested.a = 5;
+  await waitScheduler();
+  expectSpy(e.spy, 2);
+  expectSpy(d.spy, 2, { result: 10 });
+});
+
+test("computed can be called multiple times and returns same value if unchanged", async () => {
+  const state = proxy({ a: 1, b: 2 });
+
+  const d = spyComputed(() => state.a + state.b);
+  expect(d.spy).not.toHaveBeenCalled();
+  expect(d()).toBe(3);
+  expectSpy(d.spy, 1, { result: 3 });
+  expect(d()).toBe(3);
+  expectSpy(d.spy, 1, { result: 3 });
+  state.a = 2;
+  await waitScheduler();
+  expectSpy(d.spy, 1, { result: 3 });
+  expect(d()).toBe(4);
+  expectSpy(d.spy, 2, { result: 4 });
+  expect(d()).toBe(4);
+  expectSpy(d.spy, 2, { result: 4 });
+});
+
+test("computed should not subscribe to change if no effect is using it", async () => {
+  const state = proxy({ a: 1, b: 10 });
+  const d = spyComputed(() => state.a);
+  expect(d.spy).not.toHaveBeenCalled();
+  const e = spyEffect(() => {
+    d();
+  });
+  const unsubscribe = e();
+  expectSpy(e.spy, 1);
+  expectSpy(d.spy, 1, { result: 1 });
+  state.a = 2;
+  await waitScheduler();
+  expectSpy(e.spy, 2);
+  expectSpy(d.spy, 2, { result: 2 });
+  unsubscribe();
+  state.a = 3;
+  await waitScheduler();
+  expectSpy(e.spy, 2);
+  expectSpy(d.spy, 2, { result: 2 });
+});
+
+test("computed should not be recomputed when called from effect if none of its source changed", async () => {
+  const state = proxy({ a: 1 });
+  const d = spyComputed(() => state.a * 0);
+  expect(d.spy).not.toHaveBeenCalled();
+  const e = spyEffect(() => {
+    d();
+  });
+  e();
+  expectSpy(e.spy, 1);
+  expectSpy(d.spy, 1, { result: 0 });
+  state.a = 2;
+  await waitScheduler();
+  // effect should not rerun because computed value didn't change (still 0)
+  expectSpy(e.spy, 1);
+  // but computed getter was re-evaluated (source changed)
+  expectSpy(d.spy, 2, { result: 0 });
+});
+
+describe("throwing compute", () => {
+  test("currentComputation is restored after a thrown compute()", () => {
+    // updateComputation sets currentComputation before invoking compute().
+    // If compute() throws and we don't restore currentComputation in a
+    // finally, the tracking pointer is left dangling at the failed
+    // computation. The next atom read would then silently attach itself as
+    // a source of the broken computation, corrupting the dependency graph.
+    class TestError extends Error {
+      override name = "TestError";
+    }
+    const broken = computed(() => {
+      throw new TestError("compute failed");
+    });
+    const brokenAtom = (broken as any)[atomSymbol] as ComputationAtom;
+
+    expect(() => broken()).toThrow(TestError);
+    expect(brokenAtom.sources.size).toBe(0);
+
+    // Read another signal from a non-tracking context. Without the
+    // try/finally in updateComputation, currentComputation would still
+    // point at `broken` here, and this read would wire `witness` as a
+    // source of `broken`.
+    const witness = signal(42);
+    witness();
+    const witnessAtom = (witness as any)[atomSymbol] as ComputationAtom;
+    expect(witnessAtom.observers.size).toBe(0);
+    expect(brokenAtom.sources.size).toBe(0);
+  });
+
+  test("an observer of a computed that threw runs again when a source changes", async () => {
+    class TestError extends Error {
+      override name = "TestError";
+    }
+    const s = signal(0);
+    const c = computed(() => {
+      if (s() === 1) {
+        throw new TestError("one");
+      }
+      return s();
+    });
+    const reads: unknown[] = [];
+    effect(() => {
+      try {
+        reads.push(c());
+      } catch (error) {
+        reads.push((error as Error).message);
+      }
+    });
+    s.set(1);
+    await waitScheduler();
+    s.set(2);
+    await waitScheduler();
+    expect(reads).toEqual([0, "one", 2]);
+  });
+
+  test("an error of a custom equals is thrown to the readers like a getter error", async () => {
+    class TestError extends Error {
+      override name = "TestError";
+    }
+    const s = signal(0);
+    let throwInEquals = false;
+    const c = computed(() => s(), {
+      equals: (a, b) => {
+        if (throwInEquals) {
+          throw new TestError("equals");
+        }
+        return a === b;
+      },
+    });
+    const reads: unknown[] = [];
+    effect(() => {
+      try {
+        reads.push(c());
+      } catch (error) {
+        reads.push((error as Error).message);
+      }
+    });
+    throwInEquals = true;
+    s.set(1);
+    await waitScheduler();
+    throwInEquals = false;
+    s.set(2);
+    await waitScheduler();
+    expect(reads).toEqual([0, "equals", 2]);
+  });
+});
+
+describe("unsubscription", () => {
+  test("computed shoud unsubscribes from dependencies when effect is unsubscribed", async () => {
+    function computedWithDerived<T>(fn: () => T): SpyComputed<T> & { atom: ComputationAtom } {
+      const compute: any = spyComputed(fn);
+      compute.atom = compute[atomSymbol];
+      return compute;
+    }
+
+    const state = proxy({ a: 1, b: 2 });
+    const d = computedWithDerived(() => state.a + state.b);
+    const e = spyEffect(() => d());
+    d();
+    expect(d.atom.observers.size).toBe(0);
+    const unsubscribe = e();
+    expect(d.atom.observers.size).toBe(1);
+    unsubscribe();
+    expect(d.atom.observers.size).toBe(0);
+  });
+});
+
+describe("disposeComputation", () => {
+  test("disposing a signalComputation recursively cleans up derived computations from signal observers", () => {
+    // Mimics the component scenario:
+    // selectedId signal -> isSelected computed -> signalComputation (render effect)
+    const selectedId = signal(0);
+    const selectedIdAtom = (selectedId as any)[atomSymbol];
+
+    const isSelected = computed(() => selectedId() === 42);
+    const isSelectedAtom = (isSelected as any)[atomSymbol];
+
+    // Simulate a signalComputation (like component's render effect)
+    // that reads isSelected during render
+    const signalComp = createComputation(() => {
+      return isSelected(); // reads the computed during "render"
+    }, ComputationFlags.STALE);
+
+    // Execute (simulating first _render)
+    updateComputation(signalComp);
+
+    // Verify sources are established
+    expect(signalComp.sources.has(isSelectedAtom)).toBe(true);
+    expect(isSelectedAtom.observers.has(signalComp)).toBe(true);
+    expect(isSelectedAtom.sources.has(selectedIdAtom)).toBe(true);
+    expect(selectedIdAtom.observers.has(isSelectedAtom)).toBe(true);
+
+    // Dispose (simulating _destroy)
+    disposeComputation(signalComp);
+
+    // signalComputation's sources should be cleared
+    expect(signalComp.sources.size).toBe(0);
+    // signalComputation should be removed from isSelected's observers
+    expect(isSelectedAtom.observers.has(signalComp)).toBe(false);
+    // KEY CHECK: isSelected should be removed from selectedId's observers
+    // (recursive disposal since isSelected has no more observers)
+    expect(selectedIdAtom.observers.has(isSelectedAtom)).toBe(false);
+  });
+
+  test("disposing works after removeSources + re-render (simulating _render flow)", () => {
+    // Simulates the actual _render() flow where removeSources is called first,
+    // then sources are re-established during template rendering
+    const selectedId = signal(0);
+    const selectedIdAtom = (selectedId as any)[atomSymbol];
+
+    const isSelected = computed(() => selectedId() === 42);
+    const isSelectedAtom = (isSelected as any)[atomSymbol];
+
+    const signalComp = createComputation(() => {
+      return isSelected();
+    }, ComputationFlags.EXECUTED);
+
+    // Simulate _render() flow: removeSources, then set currentComputation, then render
+    removeSources(signalComp); // noop first time
+    setComputation(signalComp);
+    isSelected(); // reads computed during "render"
+    setComputation(undefined);
+
+    // Verify sources established
+    expect(signalComp.sources.has(isSelectedAtom)).toBe(true);
+    expect(selectedIdAtom.observers.has(isSelectedAtom)).toBe(true);
+
+    // Simulate second _render() (e.g., parent-triggered render)
+    removeSources(signalComp); // clears sources
+    setComputation(signalComp);
+    isSelected(); // re-establishes sources
+    setComputation(undefined);
+
+    // Verify sources still correct after second render
+    expect(signalComp.sources.has(isSelectedAtom)).toBe(true);
+    expect(isSelectedAtom.observers.has(signalComp)).toBe(true);
+    expect(selectedIdAtom.observers.has(isSelectedAtom)).toBe(true);
+
+    // Dispose (simulating _destroy)
+    disposeComputation(signalComp);
+
+    expect(signalComp.sources.size).toBe(0);
+    expect(isSelectedAtom.observers.has(signalComp)).toBe(false);
+    expect(selectedIdAtom.observers.has(isSelectedAtom)).toBe(false);
+  });
+});
+
+describe("detach on write", () => {
+  const atomOf = (r: any): ComputationAtom => r[atomSymbol];
+
+  test("discarded computed unsubscribes from its source on next write", async () => {
+    const store = signal(1);
+    const storeAtom = atomOf(store);
+    const d = spyComputed(() => store() * 2);
+    expect(d()).toBe(2);
+    expect(storeAtom.observers.size).toBe(1);
+
+    // nothing observes d: the next write to store severs the subscription
+    store.set(2);
+    await waitScheduler();
+    expect(storeAtom.observers.size).toBe(0);
+    // still lazy: the write did not recompute it
+    expectSpy(d.spy, 1);
+  });
+
+  test("detached computed recomputes and resubscribes on next read", async () => {
+    const store = signal(1);
+    const storeAtom = atomOf(store);
+    const d = spyComputed(() => store() * 2);
+    d();
+    store.set(2);
+    await waitScheduler();
+    expect(storeAtom.observers.size).toBe(0);
+
+    expect(d()).toBe(4);
+    expectSpy(d.spy, 2);
+    expect(storeAtom.observers.size).toBe(1);
+
+    store.set(3);
+    await waitScheduler();
+    expect(storeAtom.observers.size).toBe(0);
+    expect(d()).toBe(6);
+  });
+
+  test("dead computed chain fully detaches in one flush", async () => {
+    const store = signal(1);
+    const storeAtom = atomOf(store);
+    const a = computed(() => store() + 1);
+    const b = computed(() => a() * 10);
+    expect(b()).toBe(20);
+    expect(storeAtom.observers.size).toBe(1);
+    expect(atomOf(a).observers.size).toBe(1);
+
+    store.set(2);
+    await waitScheduler();
+    // disposing b drops a's last observer, which recursively detaches a
+    expect(atomOf(a).observers.size).toBe(0);
+    expect(storeAtom.observers.size).toBe(0);
+  });
+
+  test("computed observed by an effect stays subscribed", async () => {
+    const store = signal(1);
+    const storeAtom = atomOf(store);
+    const d = computed(() => store() * 2);
+    const e = spyEffect(() => d());
+    const stop = e();
+
+    store.set(2);
+    await waitScheduler();
+    expectSpy(e.spy, 2);
+    expect(storeAtom.observers.size).toBe(1);
+    stop();
+  });
+
+  test("computed re-observed before the flush is not disposed", async () => {
+    const store = signal(1);
+    const d = spyComputed(() => store() * 2);
+    d();
+    // this write makes d a disposal candidate...
+    store.set(2);
+    // ...but an effect subscribes to it before the batched flush runs
+    const e = spyEffect(() => d());
+    const stop = e();
+    await waitScheduler();
+    expect(atomOf(store).observers.size).toBe(1);
+
+    store.set(3);
+    await waitScheduler();
+    expectSpy(e.spy, 2);
+    expect(d()).toBe(6);
+    stop();
+  });
+
+  test("effect that stops reading a computed lets the next write detach it", async () => {
+    const cond = signal(true);
+    const store = signal(1);
+    const storeAtom = atomOf(store);
+    const d = spyComputed(() => store() * 2);
+    const e = spyEffect(() => (cond() ? d() : 0));
+    const stop = e();
+    expect(storeAtom.observers.size).toBe(1);
+
+    cond.set(false);
+    await waitScheduler();
+    // the effect dropped d, but d is still subscribed to store...
+    expect(atomOf(d).observers.size).toBe(0);
+    expect(storeAtom.observers.size).toBe(1);
+
+    // ...until the next write to store mops it up
+    store.set(2);
+    await waitScheduler();
+    expect(storeAtom.observers.size).toBe(0);
+    stop();
+  });
+});
+
+describe("nested computed", () => {
+  test("computed can depend on another computed", async () => {
+    const state = proxy({ a: 1, b: 2 });
+    const d1 = spyComputed(() => state.a + state.b);
+    const d2 = spyComputed(() => d1() * 2);
+    const e = spyEffect(() => d2());
+    e();
+    expectSpy(e.spy, 1);
+    expectSpy(d1.spy, 1, { result: 3 });
+    expectSpy(d2.spy, 1, { result: 6 });
+    state.a = 3;
+    await waitScheduler();
+    expectSpy(e.spy, 2);
+    expectSpy(d1.spy, 2, { result: 5 });
+    expectSpy(d2.spy, 2, { result: 10 });
+  });
+
+  test("nested computed should not recompute if none of its sources changed", async () => {
+    /**
+     *   s1
+     *    ↓
+     *   d1 = s1 * 0
+     *    ↓
+     *   d2 = d1
+     *    ↓
+     *   e1
+     *
+     * change s1
+     * -> d1 should recomputes but d2 should not
+     */
+    const state = proxy({ a: 1 });
+    const d1 = spyComputed(() => state.a);
+    const d2 = spyComputed(() => d1() * 0);
+    const e = spyEffect(() => d2());
+    e();
+    expectSpy(e.spy, 1);
+    expectSpy(d1.spy, 1, { result: 1 });
+    expectSpy(d2.spy, 1, { result: 0 });
+    state.a = 3;
+    await waitScheduler();
+    // effect should not rerun because d2's value didn't change (still 0)
+    expectSpy(e.spy, 1);
+    expectSpy(d1.spy, 2, { result: 3 });
+    // d2 recomputes because its source d1 changed, but its value is still 0
+    expectSpy(d2.spy, 2, { result: 0 });
+  });
+
+  test("recompute children if source changed", async () => {
+    /**
+     *        +-------+
+     *        |  s1   |
+     *        +-------+
+     *            v
+     *        +-------+
+     *        |  d1   |
+     *        +-------+
+     *      v           v
+     *  +-------+       +-------+
+     *  |  d2   |       |  d3   |
+     *  +-------+       +-------+
+     *    |   v          v
+     *    |    +-------+
+     *    |    |  d4   |
+     *    |    +-------+
+     *    |      |
+     *    v      v
+     *    +-------+
+     *    |  e1   |
+     *    +-------+
+     *
+     * change s1
+     * -> d1, d2, d3, d4, e1 should recomputes
+     */
+    const state = proxy({ a: 1 });
+    const d1 = spyComputed(() => state.a);
+    const d2 = spyComputed(() => d1() + 1); // 1 + 1 = 2
+    const d3 = spyComputed(() => d1() + 2); // 1 + 2 = 3
+    const d4 = spyComputed(() => d2() + d3()); // 2 + 3 = 5
+    const e = spyEffect(() => d4());
+    e();
+    expectSpy(e.spy, 1);
+    expectSpy(d1.spy, 1, { result: 1 });
+    expectSpy(d2.spy, 1, { result: 2 });
+    expectSpy(d3.spy, 1, { result: 3 });
+    expectSpy(d4.spy, 1, { result: 5 });
+    state.a = 2;
+    await waitScheduler();
+    expectSpy(e.spy, 2);
+    expectSpy(d1.spy, 2, { result: 2 });
+    expectSpy(d2.spy, 2, { result: 3 });
+    expectSpy(d3.spy, 2, { result: 4 });
+    expectSpy(d4.spy, 2, { result: 7 });
+  });
+});
+
+describe("writable computed", () => {
+  test("set throws by default on a read-only computed", () => {
+    const percentage = signal(0.5);
+    const value = computed(() => percentage() * 100);
+    expect(percentage()).toBe(0.5);
+    expect(value()).toBe(50);
+
+    expect(() => value.set(0.21)).toThrow(/read-only computed/);
+    expect(percentage()).toBe(0.5);
+    expect(value()).toBe(50);
+  });
+
+  test("create readonly signal", () => {
+    const percentage = signal(0.5);
+    const value = computed(percentage);
+    expect(percentage()).toBe(0.5);
+    expect(value()).toBe(0.5);
+
+    expect(() => value.set(0.21)).toThrow(/read-only computed/);
+    expect(percentage()).toBe(0.5);
+    expect(value()).toBe(0.5);
+  });
+
+  test("update source from computed", () => {
+    const percentage = signal(0.5);
+    const value = computed(() => percentage() * 100, {
+      set: (nextValue) => percentage.set(nextValue / 100),
+    });
+    expect(percentage()).toBe(0.5);
+    expect(value()).toBe(50);
+
+    percentage.set(0.21);
+    expect(percentage()).toBe(0.21);
+    expect(value()).toBe(21);
+  });
+
+  test("setter computes each time", () => {
+    const steps: string[] = [];
+
+    const percentage = signal(0.5);
+    const value = computed(() => percentage() * 100, {
+      set: (nextValue) => {
+        steps.push("compute");
+        percentage.set(nextValue / 100);
+      },
+    });
+
+    value.set(21);
+    value.set(21);
+    value.set(21);
+    expect(value()).toBe(21);
+    expect(steps.splice(0)).toEqual(["compute", "compute", "compute"]);
+  });
+
+  test("updating computed triggers effect", async () => {
+    const steps: number[] = [];
+
+    const percentage = signal(0.5);
+    const value = computed(() => percentage() * 100, {
+      set: (nextValue) => percentage.set(nextValue / 100),
+    });
+    const effect = spyEffect(() => {
+      steps.push(value());
+    });
+    const cleanupEffect = effect();
+    expect(steps.splice(0)).toEqual([50]);
+
+    value.set(25);
+    await waitScheduler();
+    expect(steps.splice(0)).toEqual([25]);
+
+    cleanupEffect();
+  });
+
+  test("compute can read and write different types", () => {
+    const value = signal(4);
+    const binary = computed(() => value().toString(2), {
+      set: (nextValue: string | number) => {
+        if (typeof nextValue === "number") {
+          value.set(nextValue);
+        } else {
+          value.set(parseInt(nextValue, 2));
+        }
+      },
+    });
+    expect(binary()).toBe("100");
+
+    // can set a string
+    binary.set("110");
+    expect(value()).toBe(6);
+
+    // can also set a number
+    binary.set(7);
+    expect(value()).toBe(7);
+  });
+});
+
+describe("equals option", () => {
+  test("an equal recompute does not notify observers and keeps the previous value", async () => {
+    const n = signal(1);
+    const getter = vi.fn(() => [n() > 0 ? "pos" : "neg"]);
+    const list = computed(getter, { equals: shallowEqual });
+
+    const e = spyEffect(() => list()[0]);
+    e();
+    expectSpy(e.spy, 1, { result: "pos" });
+    expect(getter).toHaveBeenCalledTimes(1);
+    const before = list();
+
+    n.set(2); // recomputes to a fresh but shallow-equal array
+    await waitScheduler();
+    expect(getter).toHaveBeenCalledTimes(2);
+    expectSpy(e.spy, 1);
+    expect(list()).toBe(before);
+
+    n.set(-1);
+    await waitScheduler();
+    expect(getter).toHaveBeenCalledTimes(3);
+    expectSpy(e.spy, 2, { result: "neg" });
+  });
+
+  test("equals cuts propagation through chained computeds", async () => {
+    const n = signal(1);
+    const c1 = computed(() => [n() > 0], { equals: shallowEqual });
+    const c2Getter = vi.fn(() => c1()[0]);
+    const c2 = computed(c2Getter);
+
+    const e = spyEffect(() => c2());
+    e();
+    expectSpy(e.spy, 1, { result: true });
+    expect(c2Getter).toHaveBeenCalledTimes(1);
+
+    n.set(2); // c1 recomputes to an equal value: c2 must not even recompute
+    await waitScheduler();
+    expect(c2Getter).toHaveBeenCalledTimes(1);
+    expectSpy(e.spy, 1);
+
+    n.set(-1);
+    await waitScheduler();
+    expect(c2Getter).toHaveBeenCalledTimes(2);
+    expectSpy(e.spy, 2, { result: false });
+  });
+
+  test("equals: false propagates identical values", async () => {
+    const n = signal(1);
+    const c = computed(() => (n(), 42), { equals: false });
+
+    const e = spyEffect(() => c());
+    e();
+    expectSpy(e.spy, 1, { result: 42 });
+
+    n.set(2);
+    await waitScheduler();
+    expectSpy(e.spy, 2, { result: 42 });
+  });
+
+  test("a custom equals never receives the initial undefined", async () => {
+    const n = signal(1);
+    const equals = vi.fn((a: number, b: number) => a === b);
+    const c = computed(() => n() * 10, { equals });
+
+    expect(c()).toBe(10);
+    expect(equals).not.toHaveBeenCalled();
+
+    const e = spyEffect(() => c());
+    e();
+    n.set(2);
+    await waitScheduler();
+    expect(equals).toHaveBeenCalledTimes(1);
+    expect(equals).toHaveBeenLastCalledWith(10, 20);
+  });
+
+  test("reads made by a custom equals are not tracked", async () => {
+    const other = signal(1);
+    const n = signal(1);
+    // an equals reading a reactive value (e.g. comparing through a proxy) must
+    // not subscribe the computed to it
+    const c = computed(() => n() * 10, { equals: (a, b) => (other(), Object.is(a, b)) });
+
+    const e = spyEffect(() => c());
+    e();
+    expectSpy(e.spy, 1, { result: 10 });
+
+    n.set(2); // runs equals, which reads `other`
+    await waitScheduler();
+    expectSpy(e.spy, 2, { result: 20 });
+
+    other.set(5); // must not invalidate the computed
+    await waitScheduler();
+    expectSpy(e.spy, 2);
+  });
+});

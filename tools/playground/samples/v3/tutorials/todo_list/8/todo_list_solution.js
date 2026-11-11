@@ -1,0 +1,25 @@
+import { Component, signal, providePlugins, usePlugin } from "@odoo/owl";
+import { TodoItem } from "./todo_item";
+import { TodoListPlugin } from "./todo_list_plugin";
+import { useAutofocus } from "./utils";
+
+export class TodoList extends Component {
+    static template = "tutorial.TodoList";
+    static components = { TodoItem };
+
+    input = signal.ref();
+
+    setup() {
+        providePlugins([TodoListPlugin]);
+        this.todoList = usePlugin(TodoListPlugin);
+        useAutofocus(this.input);
+    }
+
+    addTodo(ev) {
+        if (ev.type === "click" || ev.key === "Enter") {
+            const input = ev.type === "click" ? ev.target.previousElementSibling : ev.target;
+            this.todoList.addTodo(input.value);
+            input.value = "";
+        }
+    }
+}

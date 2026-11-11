@@ -1,0 +1,21 @@
+const { Component, usePlugin } = owl;
+import { ContextMenu } from "../context_menu/context_menu";
+import { StorePlugin } from "../store/store";
+import { ComponentsPlugin } from "../store/components_plugin";
+import { ComponentsTab } from "./components_tab/components_tab";
+import { ProfilerTab } from "./profiler_tab/profiler_tab";
+import { Tab } from "./tab/tab";
+
+export class DevtoolsWindow extends Component {
+  static template = "devtools.DevtoolsWindow";
+  static components = { ComponentsTab, Tab, ProfilerTab, ContextMenu };
+  setup() {
+    this.store = usePlugin(StorePlugin);
+    this.components = usePlugin(ComponentsPlugin);
+  }
+
+  selectFrame(ev) {
+    const val = ev.target.value;
+    this.store.selectFrame(val);
+  }
+}

@@ -1,0 +1,95 @@
+import {
+  ComputationFlags,
+  ComputationAtom,
+  getCurrentComputation,
+  removeSources,
+  setComputation,
+  updateComputation,
+  createComputation,
+} from "./computations";
+
+export function effect<T>(fn: () => T) {
+  return createEffect(fn, false);
+}
+
+/**
+ * Like `effect`, but re-runs synchronously, as part of the write that
+ * invalidated it, instead of being batched in a microtask. An immediate effect
+ * reading two signals runs once per write and sees the intermediate state, so
+ * prefer `effect` unless the synchronous timing is the point.
+ */
+export function immediateEffect<T>(fn: () => T) {
+  return createEffect(fn, true);
+}
+
+function createEffect<T>(fn: () => T, immediate: boolean) {
+  const computation = createComputation(
+    () => {
+      // Only run the unsubscribe dance (and the surrounding setComputation
+      // save/restore) when there's actually something to clean up: a stored
+      // cleanup function (computation.value) or nested child effects
+      // (computation.observers). For the common "leaf effect" case this is
+      // both empty, and removeSources alone suffices.
+      if (computation.value || computation.observers.size) {
+        // Keep cleanup function and child cleanup from tracking atom reads as
+        // sources of this effect.
+        setComputation(undefined);
+        unsubscribeEffect(computation);
+        setComputation(computation);
+      } else {
+        removeSources(computation);
+      }
+      return fn();
+    },
+    immediate ? ComputationFlags.IMMEDIATE | ComputationFlags.STALE : ComputationFlags.STALE
+  );
+  const parent = getCurrentComputation();
+  parent?.observers.add(computation);
+  try {
+    updateComputation(computation);
+  } catch (error) {
+    // unsubscribe, as the caller never gets the cleanup that would stop this effect
+    if (!parent) {
+      unsubscribeEffect(computation);
+    }
+    throw error;
+  }
+
+  // Remove sources and unsubscribe
+  return function cleanupEffect() {
+    // Mark as executed so a queued re-run (scheduled by an earlier signal
+    // write in the same microtick) is skipped by updateComputation.
+    computation.flags &= ~ComputationFlags.STATE_MASK;
+    // Clear currentComputation across unsubscribeEffect so the user cleanup
+    // function's atom reads do not attach as sources of whatever computation
+    // happens to be active when dispose() is called. See test
+    // "dispose called inside another effect: cleanup's atom reads do not
+    // leak to outer".
+    const previousComputation = getCurrentComputation();
+    setComputation(undefined);
+    unsubscribeEffect(computation);
+    setComputation(previousComputation);
+  };
+}
+
+function unsubscribeEffect(effect: ComputationAtom) {
+  removeSources(effect);
+  cleanupEffect(effect);
+  for (const childEffect of effect.observers) {
+    // Consider it executed to avoid it's re-execution. The recursive
+    // unsubscribeEffect below clears the child's sources as its first step,
+    // so no explicit removeSources call is needed here.
+    childEffect.flags &= ~ComputationFlags.STATE_MASK;
+    unsubscribeEffect(childEffect);
+  }
+  effect.observers.clear();
+}
+
+function cleanupEffect(effect: ComputationAtom) {
+  // the computation.value of an effect is a cleanup function
+  const cleanupFn = effect.value;
+  if (cleanupFn && typeof cleanupFn === "function") {
+    cleanupFn();
+    effect.value = undefined;
+  }
+}

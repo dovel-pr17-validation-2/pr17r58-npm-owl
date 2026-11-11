@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<templates xml:space="preserve">
+  <t t-name="devtools.Event">
+    <div class="event-container" t-att-class="{ 'event-last': this.props.event.isLast }">
+      <div class="my-0 p-0 object-line" t-on-click.stop="this.toggleDisplay">
+        <div class="ps-2 text-nowrap">
+          <i class="fa px-1 pointer-icon caret"
+            t-att-class="{'fa-caret-right': !this.props.event.toggled, 'fa-caret-down': this.props.event.toggled}"
+            t-attf-style="visibility: {{this.props.event.origin ? '' : 'hidden'}};"
+          />
+          <t t-out="this.props.event.type"/>:
+          &lt;<span style="cursor:pointer; color: var(--component-color);"
+                t-on-click.stop="() => this.components.selectComponent(this.props.event.path)"
+                t-on-mouseover.stop="() => this.components.highlightComponent(this.props.event.path)"
+                t-on-contextmenu="this.openMenu"
+                t-out="this.props.event.component"
+              />
+          <t t-if="this.minimizedKey.length > 0">
+            <span t-if="this.minimizedKey.length > 0" style="color: var(--key-name);"> key</span>=<span style="color: var(--key-content);">
+              <t t-out="this.minimizedKey"/>
+            </span>
+          </t>&gt;
+          <span>
+            (<t t-out="this.renderTime"/>ms)
+          </span>
+        </div>
+      </div>
+      <t t-if="this.props.event.toggled">
+        <div class="my-0 pt-1 object-line">
+          <i class="fa fa-caret-right mx-1 pe-2" style="visibility: hidden;"></i>
+          <span>
+            origin:
+            &lt;<span style="cursor:pointer; color: var(--component-color);"
+                  t-on-click.stop="() => this.components.selectComponent(this.props.event.origin.path)"
+                  t-on-mouseover.stop="() => this.components.highlightComponent(this.props.event.origin.path)"
+                  t-out="this.props.event.origin.component"
+                />
+            <t t-if="this.originMinimizedKey.length > 0">
+              <span style="color: var(--key-name);"> key</span>=<span style="color: var(--key-content);">
+                <t t-out="this.originMinimizedKey"/>
+              </span>
+            </t>&gt;
+          </span>
+        </div>
+      </t>
+    </div>
+  </t>
+</templates>

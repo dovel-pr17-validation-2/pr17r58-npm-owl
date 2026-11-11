@@ -1,0 +1,16 @@
+{
+  "name": "owl-playground",
+  "private": true,
+  "description": "Owl playground tools and CodeMirror dependencies",
+  "scripts": {
+    "build": "node build.mjs",
+    "build:monaco": "node build_monaco.mjs",
+    "serve": "python3 server.py || python server.py"
+  },
+  "devDependencies": {
+    "@shikijs/monaco": "^4.2.0",
+    "monaco-editor": "^0.55.1",
+    "monaco-vim": "^0.4.4",
+    "shiki": "^4.2.0"
+  }
+}
